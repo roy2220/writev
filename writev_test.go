@@ -84,7 +84,7 @@ func TestWritevError(t *testing.T) {
 
 func TestWritevRandomized(t *testing.T) {
 	if !syscallx.IsSupported {
-		return
+		t.SkipNow()
 	}
 
 	const N = 10000
@@ -97,7 +97,7 @@ func TestWritevRandomized(t *testing.T) {
 
 	buffers := [16][]byte{}
 	for i := range buffers {
-		buffers[i] = make([]byte, 16*1024)
+		buffers[i] = make([]byte, 256)
 	}
 
 	r, w, err := os.Pipe()

@@ -58,6 +58,9 @@ func writev(syscallWriter SyscallWriter, buffers [][]byte) (int, error) {
 		if l == 0 {
 			return 0, nil
 		}
+		if len(buffers[0]) == 0 {
+			return 0, nil
+		}
 		return syscallWriter.Write(buffers[0])
 	}
 
