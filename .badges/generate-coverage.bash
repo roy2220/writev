@@ -7,7 +7,10 @@ trap 'set +e; for I in ${!CLEANUPS[@]}; do eval "${CLEANUPS[-($I+1)]}"; done' EX
 
 COVER_PROFILE_FILE=$(mktemp)
 CLEANUPS+=("rm ${COVER_PROFILE_FILE@Q}")
-go test -coverprofile="${COVER_PROFILE_FILE}" $(go list ./... | grep --invert-match --fixed-strings /internal/syscallx) >/dev/null
+# shellcheck disable=SC2046
+go test -coverprofile="${COVER_PROFILE_FILE}" \
+	$(go list ./... | grep --invert-match --fixed-strings /internal/syscallx) \
+	>/dev/null
 
 BADGE_CONTENT=$(go tool cover -func "${COVER_PROFILE_FILE}" | awk 'match($0, "^total:\\s+\\(statements\\)\\s+([0-9]+(\\.[0-9]+)?)%$", groups) {
   cover_percent = groups[1]

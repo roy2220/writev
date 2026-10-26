@@ -19,7 +19,12 @@ func ExampleWritev_file() {
 		os.Remove(f.Name())
 	}()
 
-	n, err := writev.Writev(f, [][]byte{
+	w, err := writev.NewWriter(f)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	n, err := w.WriteBuffers([][]byte{
 		[]byte("hello, "),
 		[]byte("writev"),
 		[]byte("!"),

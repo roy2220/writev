@@ -42,7 +42,12 @@ func main() {
         os.Remove(f.Name())
     }()
 
-    n, err := writev.Writev(f, [][]byte{
+    w, err := writev.NewWriter(f)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    n, err := w.WriteBuffers([][]byte{
         []byte("hello, "),
         []byte("writev"),
         []byte("!"),
@@ -67,16 +72,19 @@ func main() {
 }
 ```
 
-## Limitations
+## Caveats
 
-* On Linux/Darwin/*BSD, the buffers are written in an atomic manner and other
-  buffers from concurrent writes in the same process cannot interleave between
-  them.
+**Contiguous writes are platform-dependent:**
 
-* On other platforms, the buffers may be split across multiple `Write` calls,
-  so other buffers from concurrent writes in the same process may interleave
-  between them. Callers that need an atomic write there should serialize their
-  calls, for example with a mutex.
+- On Linux/Darwin/*BSD, buffers are written contiguously: concurrent writes to
+  the same underlying writer within a process cannot interleave between the
+  buffers.
+
+- On other platforms, buffers may be split across multiple `Write` calls to
+  the underlying writer. As a result, concurrent writes to the same underlying
+  writer within a process may interleave between the buffers. Callers
+  requiring contiguous writes on these platforms should serialize their calls
+  (for example, with a mutex).
 
 ## License
 

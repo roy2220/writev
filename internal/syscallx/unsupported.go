@@ -13,11 +13,11 @@ type Iovec struct {
 	Len  int
 }
 
-func (Iovec) SetLen(int) {}
+func (i *Iovec) SetLen(length int) {}
 
 var (
 	EINTR  error
 	EAGAIN error
 )
 
-func Writev(fd int, iovecs []Iovec) (int, error) { panic("unsupported") }
+func Writev(fd int, iovecs []Iovec) (_ int, _ error) { return }

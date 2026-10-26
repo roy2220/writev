@@ -31,29 +31,53 @@ var (
 	_ SyscallWriter = (*net.UnixConn)(nil)
 )
 
-// Writev batch-writes the given buffers to syscallWriter in order, without
-// modifying them. It returns the number of bytes written and the error that
-// stopped the write early, if any.
-//
-// On Linux/Darwin/*BSD, the buffers are written in an atomic manner and other
-// buffers from concurrent writes in the same process cannot interleave between
-// them.
-//
-// On other platforms, the buffers may be split across multiple
-// syscallWriter.Write calls, so other buffers from concurrent writes in the
-// same process may interleave between them. Callers that need an atomic write
-// there should serialize their calls, for example with a mutex.
-func Writev(syscallWriter SyscallWriter, buffers [][]byte) (int, error) {
+// Writer batch-writes multiple buffers to a file or connection. A Writer must
+// be created with NewWriter; the zero value is not usable.
+type Writer struct {
+	w       io.Writer
+	rawConn syscall.RawConn
+}
+
+// NewWriter returns a Writer that writes to syscallWriter.
+func NewWriter(syscallWriter SyscallWriter) (Writer, error) {
+	var rawConn syscall.RawConn
 	if syscallx.IsSupported {
-		return writev(syscallWriter, buffers)
+		var err error
+		rawConn, err = syscallWriter.SyscallConn()
+		if err != nil {
+			return Writer{}, err
+		}
+	}
+	return Writer{
+		w:       syscallWriter,
+		rawConn: rawConn,
+	}, nil
+}
+
+// WriteBuffers batch-writes the given buffers to the underlying writer in
+// order, without modifying them. It returns the number of bytes written and the
+// error that stopped the write early, if any.
+//
+// On Linux/Darwin/*BSD, buffers are written contiguously: concurrent writes to
+// the same underlying writer within a process cannot interleave between the
+// buffers.
+//
+// On other platforms, buffers may be split across multiple Write calls to the
+// underlying writer. As a result, concurrent writes to the same underlying
+// writer within a process may interleave between the buffers. Callers requiring
+// contiguous writes on these platforms should serialize their calls (for
+// example, with a mutex).
+func (w Writer) WriteBuffers(buffers [][]byte) (int, error) {
+	if syscallx.IsSupported {
+		return w.writeBuffersFast(buffers)
 	} else {
-		return writevFallback(syscallWriter, buffers, defaultMaxBatchSize)
+		return w.writeBuffersSlow(buffers, defaultMaxBatchSize)
 	}
 }
 
 var writevOpPool = sync.Pool{New: func() any { return new(writevOp) }}
 
-func writev(syscallWriter SyscallWriter, buffers [][]byte) (int, error) {
+func (w Writer) writeBuffersFast(buffers [][]byte) (int, error) {
 	if l := len(buffers); l <= 1 {
 		if l == 0 {
 			return 0, nil
@@ -61,12 +85,7 @@ func writev(syscallWriter SyscallWriter, buffers [][]byte) (int, error) {
 		if len(buffers[0]) == 0 {
 			return 0, nil
 		}
-		return syscallWriter.Write(buffers[0])
-	}
-
-	rawConn, err := syscallWriter.SyscallConn()
-	if err != nil {
-		return 0, err
+		return w.w.Write(buffers[0])
 	}
 
 	op := writevOpPool.Get().(*writevOp)
@@ -76,7 +95,7 @@ func writev(syscallWriter SyscallWriter, buffers [][]byte) (int, error) {
 		writevOpPool.Put(op)
 	}()
 
-	if err := rawConn.Write(op.Execute); err != nil {
+	if err := w.rawConn.Write(op.Execute); err != nil {
 		return op.N, err
 	}
 	return op.N, op.Err
@@ -126,7 +145,7 @@ func (o *writevOp) execute(fd uintptr) bool {
 			return true
 		}
 		if n == 0 {
-			o.Err = io.ErrUnexpectedEOF
+			o.Err = io.ErrShortWrite
 			return true
 		}
 		o.N += n
@@ -170,7 +189,7 @@ func makeIovec(base unsafe.Pointer, l int) syscallx.Iovec {
 
 const defaultMaxBatchSize = 64 * 1024
 
-func writevFallback(writer io.Writer, buffers [][]byte, maxBatchSize int) (int, error) {
+func (w Writer) writeBuffersSlow(buffers [][]byte, maxBatchSize int) (int, error) {
 	var (
 		batchOffset = 0
 		batchSize   = 0
@@ -181,7 +200,7 @@ func writevFallback(writer io.Writer, buffers [][]byte, maxBatchSize int) (int, 
 		if batchSize >= 1 {
 			batch := buffers[batchOffset:nextBatchOffset]
 			var nn int
-			nn, err = flushBuffers(batch, batchSize, writer)
+			nn, err = w.mergeAndWriteBuffers(batch, batchSize)
 			n += nn
 		}
 		batchOffset = nextBatchOffset
@@ -194,7 +213,7 @@ func writevFallback(writer io.Writer, buffers [][]byte, maxBatchSize int) (int, 
 			if err := flushBatch(i); err != nil {
 				return n, err
 			}
-			nn, err := writer.Write(buffer)
+			nn, err := w.w.Write(buffer)
 			n += nn
 			if err != nil {
 				return n, err
@@ -217,11 +236,11 @@ func writevFallback(writer io.Writer, buffers [][]byte, maxBatchSize int) (int, 
 
 var mergedBufferPool = sync.Pool{New: func() any { return new([]byte) }}
 
-func flushBuffers(buffers [][]byte, totalBufferSize int, writer io.Writer) (int, error) {
+func (w Writer) mergeAndWriteBuffers(buffers [][]byte, totalBufferSize int) (int, error) {
 	for _, buffer := range buffers {
 		l := len(buffer)
 		if l == totalBufferSize {
-			return writer.Write(buffer)
+			return w.w.Write(buffer)
 		}
 		if l >= 1 {
 			break
@@ -235,5 +254,5 @@ func flushBuffers(buffers [][]byte, totalBufferSize int, writer io.Writer) (int,
 	for _, buffer := range buffers {
 		*mergedBuffer = append(*mergedBuffer, buffer...)
 	}
-	return writer.Write(*mergedBuffer)
+	return w.w.Write(*mergedBuffer)
 }

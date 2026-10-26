@@ -32,9 +32,9 @@ func Writev(fd int, iovecs []Iovec) (int, error) {
 	return int(r), err
 }
 
+//go:linkname syscall_syscall syscall.syscall
+func syscall_syscall(fn, a1, a2, a3 uintptr) (r1, r2 uintptr, err syscall.Errno)
+
 var libc_writev_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libc_writev writev "libc.so"
-
-//go:linkname syscall_syscall syscall.syscall
-func syscall_syscall(fn, a1, a2, a3 uintptr) (r1, r2 uintptr, err syscall.Errno)
