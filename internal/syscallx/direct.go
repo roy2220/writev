@@ -1,3 +1,5 @@
+// Modified from golang.org/x/sys/unix (BSD 3-Clause, see LICENSE).
+
 //go:build dragonfly || freebsd || linux || netbsd
 
 package syscallx

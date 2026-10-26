@@ -1,3 +1,5 @@
+// Modified from golang.org/x/sys/unix (BSD 3-Clause, see LICENSE).
+
 package syscallx
 
 import (
