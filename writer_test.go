@@ -2,6 +2,7 @@ package writev_test
 
 import (
 	"crypto/md5"
+	"encoding/binary"
 	"errors"
 	"io"
 	"math/rand/v2"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	. "github.com/roy2220/writev"
 	"github.com/roy2220/writev/internal/syscallx"
@@ -80,6 +82,19 @@ func (c *mockRawConn) Write(f func(fd uintptr) (done bool)) error {
 	return nil
 }
 
+func fillRandomData(b []byte) {
+	var seed []byte
+	for range 4 {
+		seed = binary.BigEndian.AppendUint64(seed, uint64(time.Now().UnixNano()))
+	}
+	io.ReadFull(rand.NewChaCha8([32]byte(seed)), b)
+}
+
+func resetFileOffset(t testing.TB, f *os.File) {
+	_, err := f.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+}
+
 func TestNewWriterFailed(t *testing.T) {
 	_, err := NewWriter(&mockSyscallWriter{
 		SyscallConnError: errors.New("syscall conn error"),
@@ -131,12 +146,6 @@ func TestWriter_WriteBuffersFastRandomized(t *testing.T) {
 	ww, err := NewWriter(w)
 	require.NoError(t, err)
 
-	var seed [32]byte
-	for i := range seed {
-		seed[i] = uint8(rand.IntN(256))
-	}
-	cc8 := rand.NewChaCha8(seed)
-
 	buffers := [16][]byte{}
 	for i := range buffers {
 		buffers[i] = make([]byte, 256)
@@ -148,19 +157,16 @@ func TestWriter_WriteBuffersFastRandomized(t *testing.T) {
 	n2 := 0
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_, err := io.Copy(hash2, r)
 		assert.NoError(t, err)
-	}()
+	})
 
 	for range N {
 		l := rand.IntN(1 + len(buffers))
 		for i, b := range buffers[:l] {
 			b = b[:rand.IntN(1+cap(b))]
-			_, err := io.ReadFull(cc8, b)
-			require.NoError(t, err)
+			fillRandomData(b)
 			buffers[i] = b
 
 			nn, err := hash1.Write(b)
@@ -193,14 +199,8 @@ func TestWriter_WriteBuffersFastIovecLimit(t *testing.T) {
 	ww, err := NewWriter(w)
 	require.NoError(t, err)
 
-	var seed [32]byte
-	for i := range seed {
-		seed[i] = uint8(rand.IntN(256))
-	}
-	cc8 := rand.NewChaCha8(seed)
-
 	data := make([]byte, 1024)
-	_, err = io.ReadFull(cc8, data)
+	fillRandomData(data)
 	require.NoError(t, err)
 
 	hash1 := md5.New()
@@ -208,12 +208,10 @@ func TestWriter_WriteBuffersFastIovecLimit(t *testing.T) {
 	n1 := 0
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_, err := io.Copy(hash2, r)
 		assert.NoError(t, err)
-	}()
+	})
 
 	buffers := make([][]byte, 2048)
 	for i := range buffers {
@@ -558,12 +556,6 @@ func TestWriter_WriteBuffersSlow(t *testing.T) {
 func TestWriter_WriteBuffersSlowRandomized(t *testing.T) {
 	const N = 10000
 
-	var seed [32]byte
-	for i := range seed {
-		seed[i] = uint8(rand.IntN(256))
-	}
-	cc8 := rand.NewChaCha8(seed)
-
 	buffers := [6][]byte{}
 	for i := range buffers {
 		buffers[i] = make([]byte, 100)
@@ -583,8 +575,7 @@ func TestWriter_WriteBuffersSlowRandomized(t *testing.T) {
 		l := rand.IntN(1 + len(buffers))
 		for i, b := range buffers[:l] {
 			b = b[:rand.IntN(1+cap(b))]
-			_, err := io.ReadFull(cc8, b)
-			require.NoError(t, err)
+			fillRandomData(b)
 			buffers[i] = b
 
 			nn, err := hash1.Write(b)
@@ -606,7 +597,8 @@ func BenchmarkWriter(b *testing.B) {
 		b.SkipNow()
 	}
 
-	cc8 := rand.NewChaCha8([32]byte{})
+	const maxFileSize = 300 * 1024 * 1024
+
 	buffers := [][]byte{
 		make([]byte, 32*1024),
 		nil,
@@ -623,37 +615,35 @@ func BenchmarkWriter(b *testing.B) {
 		if buffer == nil {
 			buffers[i] = make([]byte, 1+rand.IntN(1000))
 		}
-		_, err := io.ReadFull(cc8, buffers[i])
-		require.NoError(b, err)
+		fillRandomData(buffers[i])
 	}
-
 	totalBufferSize := 0
 	for _, p := range buffers {
 		totalBufferSize += len(p)
 	}
 
-	run := func(b *testing.B, write func(*os.File, Writer) (int, error)) {
-		f, err := os.CreateTemp(b.TempDir(), "writev")
-		require.NoError(b, err)
-		b.Cleanup(func() { f.Close() })
-		require.NoError(b, f.Truncate(int64(totalBufferSize)))
+	f, err := os.CreateTemp(b.TempDir(), "writev")
+	require.NoError(b, err)
+	b.Cleanup(func() { f.Close() })
 
+	run := func(b *testing.B, write func(*os.File, Writer) (int, error)) {
 		w, err := NewWriter(f)
 		require.NoError(b, err)
 
+		resetFileOffset(b, f)
+		n := 0
 		b.SetBytes(int64(totalBufferSize))
 		b.ReportAllocs()
 
 		for b.Loop() {
-			if _, err := f.Seek(0, io.SeekStart); err != nil {
-				b.Fatal(err)
-			}
-			n, err := write(f, w)
+			nn, err := write(f, w)
 			if err != nil {
 				b.Fatal(err)
 			}
-			if n != totalBufferSize {
-				b.Fatalf("short write: %d/%d", n, totalBufferSize)
+			n += nn
+			if n >= maxFileSize {
+				resetFileOffset(b, f)
+				n = 0
 			}
 		}
 	}
